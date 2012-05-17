@@ -1,0 +1,3 @@
+(setf *start-expression* "afpfs_mount")
+(setf *stop-expression* "afpfs_unmount")
+(setf *time-expression* ".{15}")

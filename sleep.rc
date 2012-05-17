@@ -1,0 +1,4 @@
+(setf *start-expression* "going to sleep$")
+(setf *stop-expression* "waking up$")
+(setf *time-expression* ".{15}")
+
