@@ -32,6 +32,8 @@
   ((start :accessor start :initarg :start)
    (stop :accessor stop :initarg :stop)))'
 
+(defmethod duration ((segment segment))
+ (- (stop segment) (start segment)))
 ;;; MOMENT CLASS
 (defclass moment (event)
   ((moment :accessor moment :initarg :moment)))
@@ -41,6 +43,9 @@
 
 (defmethod stop ((moment moment))
   (moment moment))
+
+(defmethod duration ((moment moment))
+  0)
 ;;;;;;;;;;;;;;;;;;;;;
 
 ;;; CONVERSION METHODS
@@ -111,6 +116,13 @@
 (defparameter *moment-expression* nil)
 (defparameter *ident-expression* nil)
 
+(defun scan-match-to-string (expr line)
+  (multiple-value-bind (whole parts) 
+      (cl-ppcre:scan-to-strings expr line)
+    (if (and parts (> (length parts) 0))
+	(aref parts 0)
+	whole)))
+
 (defun parse-file (file-name config-name)
   "Parses the log in `file-name' by the patterns specified by the `config-name'.
 Return  a list of event entries."
@@ -138,7 +150,7 @@ Return  a list of event entries."
 	   (let ((time-string (cl-ppcre:scan-to-strings time-expr line)))
 	     (push (net.telent.date:parse-time time-string) element))
 	   (push :ident element)
-	   (push (and ident-expr (cl-ppcre:scan-to-strings ident-expr line)) element)
+	   (push (and ident-expr (scan-match-to-string ident-expr line)) element)
 	   (push (nreverse element) result))))))
 
 (defun visualize-log (log-file-name config-file-name png-file-name)
@@ -146,8 +158,15 @@ Return  a list of event entries."
 
 ;;; CONVERSION METHODS
 
+(defun alist-element-< (a b)
+  (let ((time-a (second a))
+	(time-b (second b)))
+    (if (= time-a time-b)
+	(string< (first a) (first b))
+	(< time-a time-b))))
+
 (defun convert-simple-data (list)
-  (let ((slist (sort (copy-seq list) #'< :key #'second)))
+  (let ((slist (sort (copy-seq list) #'alist-element-<)))
     (loop :for (type time . rest) :in slist
        :for ident = (getf rest :ident "<NONE>")
        :with start = (make-hash-table :test #'equal)
