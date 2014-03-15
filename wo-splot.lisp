@@ -3,16 +3,6 @@
 (in-package #:wo-splot)
 
 ;;; "wo-splot" goes here. Hacks and glory await!
-
-
-;;; The format of the data is build up from line segments:
-;;;
-;;;   (segment :start time :end time :color ....)
-;;;
-;;; The segments are collected in series:
-;;;
-;;;   (serie :segment...)
-;;;
 ;;;
 (defclass draw-area ()
   ((canvas-width :initarg :canvas-width)
@@ -20,7 +10,6 @@
    (min-time :accessor min-time)
    (max-time :accessor max-time)))
 
-;(defmethod move)
 
 (defclass event ()
   ((color :accessor color :initarg :color)
@@ -51,10 +40,10 @@
 ;;; CONVERSION METHODS
 (defmethod x-point ((value integer) (area draw-area))
   (with-slots (canvas-width min-time max-time) area
-    (* canvas-width (/ (- value min-time) (- max-time min-time)))))
+    (coerce  (* canvas-width (/ (- value min-time) (- max-time min-time))) 'float)))
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-;;; DRAWING METHODS
+;;; DRAWING METHODS PNG
 (defmethod set-stroke-color ((event event))
   (apply #'set-rgb-stroke (color event)))
 
@@ -89,9 +78,10 @@
      (unless (gethash (ident element) result)
        (setf (gethash (ident element) result) (incf max)))))
 
-(defun draw-data (data file-name &key 
-		  (width 2000)
-		  (height (hash-table-count (ident-height-map data))))
+(defun draw-data (data file-name
+		  &key
+		    (width 2000)
+		    (height (hash-table-count (ident-height-map data))))
   "Draws the data to the png with file-name"
   (with-canvas (:width width :height height)
     (set-rgb-fill 1.0 1.0 1.0)
@@ -107,76 +97,116 @@
 	 (draw-at-height element (+ 0.5 height) area)))
     (save-png file-name)))
        
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; DRAWING SVG
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(defmethod draw-svg-at-height (scene (segment segment) (height number) (area draw-area))
+  (let* ((x1 (x-point (start segment) area))
+	 (x2 (max (+ 1.0 x1) (x-point (stop segment) area))))
+    (cl-svg:draw scene (:line :x1 x1 #+nil (x-point (start segment) area)
+			      :y1 height
+			      :x2 x2 #+nil (x-point (stop segment) area)
+			      :y2 height
+			      :stroke "blue"))))
+
+
+(defmethod draw-svg-at-height (scene (moment moment) (height number) (area draw-area))
+  (cl-svg:draw scene (:circle :cx (x-point (moment moment) area)
+			      :cy height
+			      :r 0.5
+			      :fill "red")))
+
+
+(defun draw-data-svg (data file-name
+		      &key 
+			(width 2000)
+			(height (hash-table-count (ident-height-map data))))
+  (with-standard-io-syntax
+    (cl-svg:with-svg-to-file
+	(scene 'cl-svg:svg-1.1-toplevel :width width :height height)
+      (file-name :if-exists :supersede :if-does-not-exist :create)
+      (let ((area (make-instance 'draw-area :canvas-height height :canvas-width width)))
+	(configure-area-from-data area data)
+	(loop
+	   :with height-map = (ident-height-map data)
+	   :for element :in data
+	   :for height = (gethash (ident element) height-map)
+	   :do
+	   (draw-svg-at-height scene element (+ 0.5 height) area))))))
+
 
 ;;; PARSING
 
-(defparameter *start-expression* "going to sleep$")
-(defparameter *stop-expression* "waking up$")
-(defparameter *time-expression* ".{15}")
-(defparameter *moment-expression* nil)
-(defparameter *ident-expression* nil)
-
-(defun scan-match-to-string (expr line)
-  (multiple-value-bind (whole parts) 
-      (cl-ppcre:scan-to-strings expr line)
+(defun scan-match (parser line)
+  "Return a generalized true value if the PARSER matches LINE.
+If the PARSER has parenthesized expressions, return the first captured group."
+  (multiple-value-bind (whole parts)
+      (cl-ppcre:scan-to-strings parser line)
     (if (and parts (> (length parts) 0))
 	(aref parts 0)
-	whole)))
+	(and whole t))))
 
-(defun parse-file (file-name config-name)
+(defun parse-file-2 (file-name config-name)
   "Parses the log in `file-name' by the patterns specified by the `config-name'.
 Return  a list of event entries."
-  (let (*start-expression* *stop-expression* *time-expression* *moment-expression* *ident-expression*)
-    (load config-name)
+  (let* ((config (with-open-file (s config-name) (read s)))
+	 (scanners (loop :for (key parser) :on config :by #'cddr
+		      :do (format t "Key: ~A, Parser: ~A~%" key parser)
+		      :collect `(,key ,(cl-ppcre:create-scanner parser)))))
+    
+    (format t "Created scanners: ~A" scanners)
     (with-open-file (s file-name :external-format :utf-8)
       (loop 
-	 :with start-expr = (and *start-expression* (cl-ppcre:create-scanner *start-expression*))
-	 :with stop-expr = (and *stop-expression* (cl-ppcre:create-scanner *stop-expression*))
-	 :with time-expr = (and *time-expression* (cl-ppcre:create-scanner *time-expression*))
-	 :with moment-expr = (and *moment-expression* (cl-ppcre:create-scanner *moment-expression*))
-	 :with ident-expr = (and *ident-expression* (cl-ppcre:create-scanner *ident-expression*))
 	 :with result = (list)
 	 :for line = (read-line s nil nil) :while line
-	 :finally (return result)
+	 :finally (return (nreverse result))
 	 :for element = (list)
 	 :do
-	 (when (and start-expr (cl-ppcre:scan start-expr line))
-	   (push :start element))
-	 (when (and stop-expr (cl-ppcre:scan stop-expr line))
-	   (push :stop element))
-	 (when (and moment-expr (cl-ppcre:scan moment-expr line))
-	   (push :moment element))
+	 (loop :for (key parser) :in scanners :do
+	    (alexandria:when-let (match (scan-match parser line))
+	      (push match element)
+	      (push key element)))
 	 (when element
-	   (let ((time-string (cl-ppcre:scan-to-strings time-expr line)))
-	     (push (net.telent.date:parse-time time-string) element))
-	   (push :ident element)
-	   (push (and ident-expr (scan-match-to-string ident-expr line)) element)
-	   (push (nreverse element) result))))))
+	   (alexandria:when-let (time-value (getf element :time))
+	     (push (net.telent.date:parse-time time-value) element)
+	     (push :parsed-time element))
+	   (push element result))))))
+
+
 
 (defun visualize-log (log-file-name config-file-name png-file-name)
-  (draw-data (convert-simple-data (parse-file log-file-name config-file-name)) png-file-name))
+  (draw-data (convert-simple-data (parse-file-2 log-file-name config-file-name)) png-file-name))
 
 ;;; CONVERSION METHODS
 
-(defun alist-element-< (a b)
-  (let ((time-a (second a))
-	(time-b (second b)))
+(defun plist-element-< (a b)
+  "Compare p-list A and B by the value of :parsed-time.
+If the parsed times are equal, put order an element with :start before the others.
+
+This is a slight hack to make the rest of the code work better if a start and end have the same parsed time."
+  (let ((time-a (getf a :parsed-time))
+	(time-b (getf b :parsed-time)))
     (if (= time-a time-b)
-	(string< (first a) (first b))
+	(getf a :start)
 	(< time-a time-b))))
 
+
 (defun convert-simple-data (list)
-  (let ((slist (sort (copy-seq list) #'alist-element-<)))
-    (loop :for (type time . rest) :in slist
-       :for ident = (getf rest :ident "<NONE>")
+  (let ((slist list  #+nil (sort (copy-seq list) #'plist-element-<)))
+    (loop 
        :with start = (make-hash-table :test #'equal)
        :with result = (list)
-       :finally (return result)
+
+       :for element :in slist
+       :for ident = (getf element :ident "<NONE>")
+       :for time = (getf element :parsed-time)
+       :finally (return (nreverse result))
        :do
-       (case type
-	 (:start 
-	  (setf (gethash ident start)  time))
-	 (:stop 
+       (cond 
+	 ((getf element :start) 
+	  (setf (gethash ident start) time))
+	 ((getf  element :stop) 
 	  (multiple-value-bind (start found) (gethash ident start)
 	    (when found
 	      (push (make-instance 'segment 
@@ -185,7 +215,7 @@ Return  a list of event entries."
 				   :stop time 
 				   :color (list 0.0 0.0 1.0)) 
 		    result))))
-	 (:moment
+	 ((getf element :moment)
 	  (push (make-instance 'moment 
 			       :ident ident
 			       :moment time 
